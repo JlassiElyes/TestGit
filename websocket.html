@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html>
+  <head>
+      <meta charset="utf-8" />
+      <title>C3 WebSocket Demo</title>
+      <script language="javascript" type="text/javascript">
+
+      var wsURI = "ws://localhost:1204/";
+      var wsRetry = true;
+      var wsRetries = 0;
+      var c3Running = false;
+      var CallbackStates = {
+        NONE: 0,
+        DISPLAY: 1,
+        GETSTRING: 2,
+        PRINTTICKET: 3,
+        SECURITY: 4,
+        SALESCONFIRM: 5
+      };
+      var callbackState = CallbackStates.NONE;
+
+      String.prototype.lpad = function(pad, length) {
+        var str = this;
+        while (str.length < length) {
+            str = pad + str;
+        }
+        return str;
+      }
+
+      function onLoad()
+      {
+        restoreSTORAGE();
+        disableINPUTS();
+        updateUI();
+      }
+
+      function disableINPUTS()
+      {
+        enableKEY(false, false, false);
+        enableNUM(false);
+        enableINPUT(false);
+      }
+
+      function enableKEY(ANNEnabled, COREnabled, VALEnabled)
+      {
+        var buttonANN = document.getElementById("buttonANN");
+        var buttonCOR = document.getElementById("buttonCOR");
+        var buttonVAL = document.getElementById("buttonVAL");
+
+        buttonANN.disabled = !ANNEnabled;
+        buttonANN.style.opacity = buttonANN.disabled ? 0.6 : 1;
+        buttonANN.style.cursor = buttonANN.disabled ? "default" : "pointer";
+        buttonCOR.disabled = !COREnabled;
+        buttonCOR.style.opacity = buttonCOR.disabled ? 0.6 : 1;
+        buttonCOR.style.cursor = buttonCOR.disabled ? "default" : "pointer";
+        buttonVAL.disabled = !VALEnabled;
+        buttonVAL.style.opacity = buttonVAL.disabled ? 0.6 : 1;
+        buttonVAL.style.cursor = buttonVAL.disabled ? "default" : "pointer";
+      }
+
+      function enableNUM(NUMEnabled)
+      {
+        for (i = 0; i <= 9; i++) {
+          var buttonNUM = document.getElementById("buttonNUM" + i);
+          buttonNUM.disabled = !NUMEnabled;
+          buttonNUM.style.opacity = buttonNUM.disabled ? 0.6 : 1;
+          buttonNUM.style.cursor = buttonNUM.disabled ? "default" : "pointer";
+
+        }
+      }
+
+      function enableINPUT(INPUTEnabled)
+      {
+        var posInput = document.getElementById("posInput");
+        posInput.value = '';
+        posInput.disabled = !INPUTEnabled;
+        posInputEnabled = INPUTEnabled;
+      }
+
+      function displayMSG(msg)
+      {
+        var posDisplay = document.getElementById("posDisplay");
+        posDisplay.innerHTML = msg;
+      }
+
+      function clearMSG()
+      {
+        var posDisplay = document.getElementById("posDisplay");
+        posDisplay.innerHTML = '';
+      }
+
+      function displaySTATUS(msg)
+      {
+        var infoDisplay = document.getElementById("infoDisplay");
+        infoDisplay.innerHTML += msg.replace(/\r?\n/g, "<br>");
+        infoDisplay.innerHTML += "<br>";
+        infoDisplay.scrollTop = infoDisplay.scrollHeight;
+      }
+
+      function clearSTATUS()
+      {
+        var infoDisplay = document.getElementById("infoDisplay");
+        infoDisplay.innerHTML = '';
+        updateSTATUSColor();
+      }
+
+      function updateSTATUSColor(color)
+      {
+        var infoDisplay = document.getElementById("infoDisplay");
+        if (color === undefined) {
+          infoDisplay.style.borderColor = "gray";
+          infoDisplay.style.borderWidth = "1px";
+        } else {
+          infoDisplay.style.borderColor = color;
+          infoDisplay.style.borderWidth = "2px";          
+        }
+      }
+
+      function KBDPressed(evt)
+      {
+        // respond to ENTER / ESC when waiting for string input
+        if (callbackState === CallbackStates.GETSTRING) {
+          var key = event.which || event.keyCode;
+          switch (key) {
+            case 27:
+              getStringCANCEL();
+            break;
+            case 13:
+              getStringCONFIRM();
+            break;
+          }
+        }
+      }
+
+      function getC3Operation()
+      {
+        var c3Op = document.getElementById("c3Operations");
+        var oper = c3Op.options[c3Op.selectedIndex].value;
+        return oper;
+      }
+
+      function getC3Currency()
+      {
+        var c3Cy = document.getElementById("c3Currencies");
+        var curr = c3Cy.options[c3Cy.selectedIndex].value;
+        return curr;
+      }
+
+      function C3OperationsChanged()
+      {
+        var oper = getC3Operation();
+        localStorage.c3Operation = oper;
+        var isPay = (oper === "PAYMENT");
+
+        // enable Amount and Currency for PAYMENT operation
+        var amnt = document.getElementById("amount");
+        var c3Cy = document.getElementById("c3Currencies");
+        amnt.disabled = !isPay;
+        c3Cy.disabled = !isPay;
+      }
+
+      function C3SimulatorChanged()
+      {
+        var c3Si = document.getElementById("c3Simulator");
+        localStorage.c3Simulator = JSON.stringify(c3Si.checked);
+        var btDv = document.getElementById("btDevices");
+        btDv.disabled = c3Si.checked;
+      }
+
+      function BTDevicesChanged()
+      {
+        var btDv = document.getElementById("btDevices");
+        if (btDv.selectedIndex != -1) {
+          var btAc = btDv.options[btDv.selectedIndex].value;
+          // update local storage
+          if (localStorage.btDevices !== undefined) {
+            var btLoc = JSON.parse(localStorage.btDevices);
+            for (i in btLoc) {
+              btLoc[i].activated = false;
+              if (btLoc[i].name === btAc) {
+                btLoc[i].activated = true;
+              }
+            }
+            localStorage.btDevices = JSON.stringify(btLoc);
+          }
+        }
+      }
+
+      function TPVNumberChanged()
+      {
+        var tpvNumber = document.getElementById("tpvNumber").value;
+        localStorage.tpvNumber = tpvNumber;
+      }
+
+      function AmountChanged()
+      {
+        var amnt = document.getElementById("amount").value;
+        localStorage.amount = amnt;
+      }
+
+      function C3CurrenciesChanged()
+      {
+        localStorage.c3Currency = getC3Currency();
+      }
+
+      function KEYClicked()
+      {
+        var buttonID = event.target.id;
+        if (callbackState === CallbackStates.DISPLAY) {
+          var frame = {
+            "event": "posmessage",
+            "body": {
+              "keyCode": buttonID.substr(buttonID.length - 3),
+            }
+          }
+          sendMessage(frame);
+        } else if (buttonID === "buttonANN") {
+          switch (callbackState) {
+            case CallbackStates.GETSTRING:
+              getStringCANCEL();
+            break;
+            case CallbackStates.SECURITY:
+              securityCANCEL();
+            break;
+            case CallbackStates.SALESCONFIRM:
+              salesCANCEL();
+            break;
+          }
+        } else if (buttonID === "buttonVAL") {
+          switch (callbackState) {
+            case CallbackStates.GETSTRING:
+              getStringCONFIRM();
+            break;
+            case CallbackStates.SECURITY:
+              securityCONFIRM();
+            break;
+            case CallbackStates.SALESCONFIRM:
+              salesCONFIRM();
+            break;
+          }
+        }
+      }
+
+      function NUMClicked()
+      {
+        var buttonID = event.target.id;
+        var frame = {
+          "event": "posmessage",
+          "body": {
+            "keyCode":"NUMERIC_" + buttonID.substr(buttonID.length - 1),
+          }
+        }
+        sendMessage(frame);
+      }
+
+      function getStringCONFIRM()
+      {
+        var posInput = document.getElementById("posInput");
+        var frame = {
+          "event": "getstring",
+          "body": {
+            "getString": posInput.value,
+            "keyCode": "VAL"
+          }
+        }
+        sendMessage(frame);
+      }
+
+      function getStringCANCEL()
+      {
+        var frame = {
+          "event": "getstring",
+          "body": {
+            "keyCode": "ANN"
+          }
+        }
+        sendMessage(frame);
+      }
+
+      function printCONFIRM()
+      {
+        var frame = {
+          "event": "printticket"
+        }
+        sendMessage(frame);
+      }
+
+      function securityCONFIRM()
+      {
+        var frame = {
+          "event": "security",
+          "body": {
+            "keyCode": "VAL"
+          }
+        }
+        sendMessage(frame);
+      }
+
+      function securityCANCEL()
+      {
+        var frame = {
+          "event": "security",
+          "body": {
+            "keyCode": "ANN"
+          }
+        }
+        sendMessage(frame);
+      }
+
+      function salesCONFIRM()
+      {
+        var frame = {
+          "event": "salesconfirmation",
+          "body": {
+            "keyCode": "VAL"
+          }
+        }
+        sendMessage(frame);
+      }
+
+      function salesCANCEL()
+      {
+        var frame = {
+          "event": "salesconfirmation",
+          "body": {
+            "keyCode": "ANN"
+          }
+        }
+        sendMessage(frame);
+      }
+
+      function updateUI()
+      {
+        var btDv = document.getElementById("btDevices");
+        var c3Op = document.getElementById("c3Operations");
+        var c3Si = document.getElementById("c3Simulator");
+        var tpvN = document.getElementById("tpvNumber");
+        var amnt = document.getElementById("amount");
+        var c3Cy = document.getElementById("c3Currencies");
+
+        btDv.disabled = c3Running;
+        c3Op.disabled = c3Running;
+        c3Si.disabled = c3Running;
+        tpvN.disabled = c3Running;
+        amnt.disabled = c3Running;
+        c3Cy.disabled = c3Running;
+        if (c3Running) {
+          document.body.style.cursor = 'progress';
+          clearMSG();
+          clearSTATUS();
+        } else {
+          document.body.style.cursor = 'default';
+          C3OperationsChanged();
+        }
+      }
+
+      function selectItemByValue(element, value)
+      {
+        for (var i = 0; i < element.options.length; i++) {
+          if (element.options[i].value === value) {
+            element.selectedIndex = i;
+            break;
+          }
+        }
+      }
+
+      function addItemOption(element, value, text)
+      {
+        var opt = document.createElement("option");
+        opt.value = value;
+        opt.text = value;
+        if (text !== undefined) {
+          opt.text = text;
+        }
+        element.options.add(opt);
+      }
+
+      function clearItemOptions(element) {
+        while (element.options.length > 0) {                
+            element.remove(0);
+        }        
+      }
+
+      function updateBTDevices(btDevices)
+      {
+        var btDv = document.getElementById("btDevices");
+        clearItemOptions(btDv);
+        for (i in btDevices) {
+          addItemOption(btDv, btDevices[i].name);
+          if (btDevices[i].activated) {
+            btDv.selectedIndex = btDv.options.length - 1;
+          }
+        }
+      }
+
+      function restoreSTORAGE()
+      {
+        var btDv = document.getElementById("btDevices");
+        var c3Op = document.getElementById("c3Operations");
+        var c3Si = document.getElementById("c3Simulator");
+        var tpvN = document.getElementById("tpvNumber");
+        var amnt = document.getElementById("amount");
+        var c3Cy = document.getElementById("c3Currencies");
+
+        if (localStorage.btDevices !== undefined) {
+          updateBTDevices(JSON.parse(localStorage.btDevices));
+        }
+        selectItemByValue(c3Op, localStorage.c3Operation);
+        if (localStorage.c3Simulator !== undefined) {
+          c3Si.checked = JSON.parse(localStorage.c3Simulator);
+          btDv.disabled = c3Si.checked;
+        }
+        if (localStorage.tpvNumber !== undefined) {
+          tpvN.value = localStorage.tpvNumber;
+        }
+        if (localStorage.amount !== undefined) {
+          amnt.value = localStorage.amount;
+        }
+        selectItemByValue(c3Cy, localStorage.c3Currency);
+      }
+
+      function runC3()
+      {
+        if (!c3Running) {
+          c3Running = true;
+          wsRetry = true;
+          wsRetries = 0;
+          updateUI();
+          connectC3();
+        }
+      }
+
+      function runC3After3Sec()
+      {
+        setTimeout(runC3, 3000);
+      }
+
+      function connectC3()
+      {
+        websocket = new WebSocket(wsURI);
+        websocket.onopen = function(evt) { onOpen(evt) };
+        websocket.onclose = function(evt) { onClose(evt) };
+        websocket.onerror = function(evt) { onError(evt) };
+        websocket.onmessage = function(evt) { onMessage(evt) };
+      }
+
+      function reconnectC3()
+      {
+        setTimeout(connectC3, 2000);
+      }
+
+      function onOpen(evt)
+      {
+        displaySTATUS("WS CONNECTED: " + wsURI);
+        wsRetry = false;
+
+        var jsonReq = {};
+        jsonReq.requestid = '175607';
+        jsonReq.protocolversion = '0.3';
+
+        var oper = getC3Operation();
+        if (oper === "DEVICES") {
+          jsonReq.event = 'pclutils';
+          jsonReq.body = {};
+          jsonReq.body.operation = 'getDevices';
+          jsonReq.body.pclMediaType = 'bluetooth';
+        } else {
+          jsonReq.event = 'c3command';
+          jsonReq.body = {};
+          // fill TPV number
+          var tpvNumber = document.getElementById("tpvNumber").value;
+          jsonReq.body.cTermNum = tpvNumber.lpad("0", 8);
+          if (oper === "INIT") {
+            jsonReq.body.cOperation = 'A';
+          } else if (oper === "VERSION") {
+            jsonReq.body.cOperation = 'L';
+          } else if (oper === "AUTOTEST") {
+            jsonReq.body.cOperation = 'V';
+            jsonReq.body.cTenderType = '04';
+          } else if (oper === "PAYMENT") {
+            jsonReq.body.cOperation = 'C';
+            jsonReq.body.cTenderType = '0';
+            // fill amount
+            var amnt = document.getElementById("amount").value;
+            jsonReq.body.cAmount = amnt.lpad("0", 12);
+            // fill currency
+            jsonReq.body.cCurrency = getC3Currency();
+            // unique ECR transaction ID, please update
+            jsonReq.body.cUsrData1 = 'PAY_PP001_DEBIT',
+            // merchant’s order reference, please update
+            jsonReq.body.extSaleReferenceID = 'REF-SaleReferenceX12'
+          }
+
+          jsonReq.parameters = {};
+          var c3Si = document.getElementById("c3Simulator");
+          jsonReq.parameters.stub = c3Si.checked;
+          jsonReq.parameters.pclStartBefore = true;
+          jsonReq.parameters.pclStopAfter = true;
+          jsonReq.parameters.c3netStartBefore = true;
+          jsonReq.parameters.c3netStopAfter = true;
+          jsonReq.parameters.c3netAddress = '127.0.0.1:9518';
+          jsonReq.parameters.batteryLevelMin = 0;
+          jsonReq.parameters.pclMediaType = 'bluetooth';
+          // provide BT device name if any selected
+          var btDv = document.getElementById("btDevices");
+          if (btDv.selectedIndex != -1) {
+            var btAc = btDv.options[btDv.selectedIndex].value;
+            jsonReq.parameters.pclDevice = {};
+            jsonReq.parameters.pclDevice.name = btAc;
+          }
+          jsonReq.parameters.pclBridgeTcpPort = '9599';
+        }
+
+        sendMessage(jsonReq);
+      }
+
+      function onClose(evt)
+      {
+        displaySTATUS("WS CLOSED: " + evt.code);
+        if (!wsRetry) {
+          c3Running = false;
+          updateUI();
+        }
+      }
+
+      function onError(evt)
+      {
+        displaySTATUS("WS ERROR: " + evt.data);
+        updateSTATUSColor("red");
+        if (wsRetry && wsRetries++ < 2) {
+          displaySTATUS("WS RETRY ... " + wsRetries)
+          reconnectC3();
+        } else {
+          c3Running = false;
+          updateUI();
+        }
+      }
+
+      function onMessage(evt)
+      {
+        displaySTATUS("WS RX <<< " + evt.data);
+        disableINPUTS();
+        var jsonobj = JSON.parse(evt.data);
+        if (jsonobj.event === "posmessage") {
+          callbackState = CallbackStates.DISPLAY;
+          displayMSG(jsonobj.body.message);
+          if (jsonobj.body.options != null) {
+            switch (jsonobj.body.options) {
+              case 'WAIT_KEY':
+              case 'WAIT_VAL_ANN_COR':
+                enableKEY(true, true, true);
+              break;
+              case 'BREAKABLE':
+              case 'WAIT_ANN':
+                enableKEY(true, false, false);
+              break;
+              case 'WAIT_COR':
+                enableKEY(false, true, false);
+              break;
+              case 'WAIT_VAL':
+                enableKEY(false, false, true);
+              break;
+              case 'WAIT_VAL_ANN':
+                enableKEY(true, false, true);
+              break;
+              case 'WAIT_NUM':
+                enableNUM(true);
+              break;
+            }
+          }
+        } else if (jsonobj.event === "getstring") {
+          callbackState = CallbackStates.GETSTRING;
+          displayMSG(jsonobj.body.message);
+          if (jsonobj.body.maxLen > 0) {
+            var posInput = document.getElementById("posInput");
+            posInput.setAttribute('maxlength', jsonobj.body.maxLen);
+          }
+          enableINPUT(true);
+          enableKEY(true, false, true);
+        } else if (jsonobj.event === "printticket") {
+          callbackState = CallbackStates.PRINTTICKET;
+          displayMSG("PRINT TICKET");
+          displaySTATUS(jsonobj.body.ticket);
+          printCONFIRM();
+        } else if (jsonobj.event === "security") {
+          callbackState = CallbackStates.SECURITY;
+          displayMSG("GET SECURITY");
+          enableKEY(true, false, true);
+        } else if (jsonobj.event === "salesconfirmation") {
+          callbackState = CallbackStates.SALESCONFIRM;
+          displayMSG("GET SALES CONFIRMATION");
+          enableKEY(true, false, true);
+        } else if (jsonobj.event === "pclutils") {
+          if (jsonobj.body.operation === "getDevices" &&
+              jsonobj.body.pclMediaType === "bluetooth" &&
+              jsonobj.body.status === "success" &&
+              jsonobj.body.pclDevices != null
+          ) {
+            updateBTDevices(jsonobj.body.pclDevices);
+            localStorage.btDevices = JSON.stringify(jsonobj.body.pclDevices);
+            updateSTATUSColor("green");
+          } else {
+            updateSTATUSColor("red");
+          }
+          websocket.close();
+        } else if (jsonobj.event === "c3response") {
+          if (jsonobj.body.cC3Error === "0000") {
+            var isInit = (getC3Operation() === "INIT");
+            // partial init ?
+            if (isInit && jsonobj.body.cUsrData1 != jsonobj.body.cUsrData2) {
+              updateSTATUSColor("orange");
+            } else {
+              updateSTATUSColor("green");
+            }
+            // success
+            if (jsonobj.body.extPaymentID != null) {
+              // payment ID
+            }
+            if (jsonobj.body.extTokenCRM != null) {
+              // token CRM
+            }
+          } else {
+            updateSTATUSColor("red");
+          }
+          if (jsonobj.body.technicalReceipt != null) {
+            displaySTATUS("<br><b>TECHNICAL RECEIPT</b><br>" + jsonobj.body.technicalReceipt);
+          } else if (jsonobj.body.customerReceipt != null) {
+            displaySTATUS("<br><b>CUSTOMER RECEIPT</b><br>" + jsonobj.body.customerReceipt);
+          }
+          displaySTATUS("<b>" + jsonobj.body.transactionResult + "</b>");
+          setTimeout(clearMSG, 2000);
+          websocket.close();
+        }
+      }
+
+      function sendMessage(jsonObj)
+      {
+        disableINPUTS();
+        callbackState = CallbackStates.NONE;
+        var msg = JSON.stringify(jsonObj, null, 2);
+        displaySTATUS("WS TX >>> " + msg);
+        websocket.send(msg);
+      }
+
+      </script>
+
+      <style>
+        div {
+          margin: 10px;
+          padding: 10px;
+          border: 1px solid gray;
+        }
+
+        p {
+          text-align: center;
+          font-family: system-ui;
+          font-size: 20px;
+        }
+
+        .class-display {
+          font-family: monospace;
+          font-size: 20px;
+          height: 48px;
+          word-wrap: break-word;
+          white-space: pre-wrap;
+          overflow-y: auto;
+        }
+        
+        .class-input {
+          border: none;
+          width: 100%;
+          font-family: monospace;
+          font-size: 20px;
+        }
+
+        .class-input:disabled {
+          background: none;
+        }
+
+        .class-input-params {
+          text-align: right;
+          font-family: monospace;
+          font-size: 16px;
+        }
+
+        .class-dropdown {
+          width: 100%;
+          font-family: monospace;
+          font-size: 16px;
+        }
+
+        #buttons button {
+          background-color: lightgray;
+          border: 2px solid black;
+          color: black;
+          border-radius: 4px;
+          padding: 15px 32px;
+          text-align: center;
+          display: inline-block;
+          font-family: monospace;
+          font-size: 20px;
+          margin: 2px 1px;
+        }
+
+        .class-status {
+          font-family: monospace;
+          font-size: 12px;
+          height: 120px;
+          word-wrap: break-word;
+          white-space: pre-wrap;
+          overflow-y: auto;
+        }
+        </style>
+        
+    </head>
+
+    <body onload="onLoad()">
+      <div id="homepage" style="margin-left: auto; margin-right: auto; max-width: 400px">
+
+        <p><strong>- C3 WEB DEMO -</strong></p>
+
+        <div>
+          <table width="100%">
+            <tr>
+              <td>
+                <select id="c3Operations" class="class-dropdown" onchange="C3OperationsChanged()">
+                  <option value="INIT" selected>INIT</option>
+                  <option value="DEVICES">DEVICES</option>
+                  <option value="VERSION">VERSION</option>
+                  <option value="AUTOTEST">AUTOTEST</option>
+                  <option value="PAYMENT">PAYMENT</option>
+                </select>
+              </td>
+              <td>
+                <input type="checkbox" id="c3Simulator" onchange="C3SimulatorChanged()">
+                <label for="c3Simulator">Simu</label>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <select id="btDevices" class="class-dropdown" onchange="BTDevicesChanged()">
+                </select>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <input id="tpvNumber" type="text" class="class-input-params" maxlength="8" placeholder="TPV Number" value="00008710" onchange="TPVNumberChanged()">
+              </td>
+            </tr>
+            <tr>
+              <td align="left">
+                <input id="amount" type="text" class="class-input-params" maxlength="12" placeholder="Amount" value="100" onchange="AmountChanged()" disabled>
+              </td>
+              <td align="left">
+                <select id="c3Currencies" class="class-dropdown" onchange="C3CurrenciesChanged()" disabled>
+                  <option value="978" selected>EUR 978</option>
+                  <option value="840">USD 840</option>
+                  <option value="826">GBP 826</option>
+                </select>
+              </td>
+              <td align="right">
+                <a id="runC3" onclick="runC3()" href="intent://c3agent/#Intent;scheme=ingenico;package=com.ingenico.fr.jc3apiandroid;i.port=1204;end;">> Run C3</a>
+              </td>
+            </tr>
+          </table>
+        </div>
+
+        <div id="posDisplay" class="class-display"></div>
+
+        <div>
+          <input id="posInput" type="text" class="class-input" onkeypress="KBDPressed()">
+        </div>
+
+        <div id="buttons">
+          <table width="100%">
+            <tr>
+              <td align="right"><button id="buttonNUM1" onclick="NUMClicked()">1</button></td>
+              <td align="center"><button id="buttonNUM2" onclick="NUMClicked()">2</button></td>
+              <td align="left"><button id="buttonNUM3" onclick="NUMClicked()">3</button></td>
+            </tr>
+            <tr>
+              <td align="right"><button id="buttonNUM4" onclick="NUMClicked()">4</button></td>
+              <td align="center"><button id="buttonNUM5" onclick="NUMClicked()">5</button></td>
+              <td align="left"><button id="buttonNUM6" onclick="NUMClicked()">6</button></td>
+            </tr>
+            <tr>
+              <td align="right"><button id="buttonNUM7" onclick="NUMClicked()">7</button></td>
+              <td align="center"><button id="buttonNUM8" onclick="NUMClicked()">8</button></td>
+              <td align="left"><button id="buttonNUM9" onclick="NUMClicked()">9</button></td>
+            </tr>
+            <tr>
+              <td></td>
+              <td align="center"><button id="buttonNUM0" onclick="NUMClicked()">0</button></td>
+              <td></td>
+            </tr>
+            <tr>
+              <td align="right"><button id="buttonANN" onclick="KEYClicked()" style="border-color: red">ANN</button></td>
+              <td align="center"><button id="buttonCOR" onclick="KEYClicked()" style="border-color: orange">COR</button></td>
+              <td align="left"><button id="buttonVAL" onclick="KEYClicked()" style="border-color: green">VAL</button></td>
+            </tr>
+          </table>
+        </div>
+
+        <div id="infoDisplay" class="class-status"></div>
+      </div>
+
+    </body>
+
+  </html>
